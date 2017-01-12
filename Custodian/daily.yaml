@@ -1,0 +1,1360 @@
+policies:
+
+  #########################################################
+  ### AMI
+  #########################################################
+
+  - name: ami-ancient-report
+    resource: ami
+    description: |
+      Report on all AMIs older than 90 days which should be de-registered.
+    filters:
+      - type: image-age
+        days: 90
+    actions:
+      - type: notify
+        template: rdt-ami-ancient-report
+        subject: "[custodian]: Nonprod (rdt-bank) - AMI > 90 Days"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+  - name: ami-ancient-deregister
+    resource: ami
+    description: |
+      Deregister AMIs older than 180 days.
+    filters:
+      - type: image-age
+        days: 90
+    actions:
+      - type: deregister
+
+  ###
+
+
+
+  #########################################################
+  ### ASG 
+  #########################################################
+
+#  - name: asg-invalid-report
+#    resource: asg
+#    description: |
+#      Mark ASGs that are spinning.
+#    filters:
+#      - "tag:custodian_invalid": absent
+#      - or:
+#        - invalid
+#        - not-encrypted
+#    actions:
+#      - type: tag
+#        key: custodian_invalid
+#        value: "ASG is invalid or unencrypted"
+#      - type: notify
+#        template: rdt-asg-invalid-report
+#        subject: "[custodian]: Nonprod (rdt-bank) - ASG Structurally Invalid"
+#        from: rdtcustodian@capitalone.com
+#        to:
+#          - resource-owner
+#          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+#        transport:
+#          type: sqs
+#          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+ 
+#  - name: asg-invalid-fixed
+#    resource: asg
+#    description: |
+#      Any ASGs which have previously been marked as invalid that have been corrected should be unmarked.
+#    filters:
+#      - "tag:custodian_invalid": not-null
+#      - valid
+#    actions:
+#      - type: unmark
+#        key: custodian_invalid
+
+  ###
+
+
+
+  #########################################################
+  ### EBS 
+  #########################################################
+
+  - name: ebs-copy-ec2-tags
+    resource: ebs
+    description: |
+      Ensure that ebs volumes are cost allocated to applications
+      by copying over instance tags to their attached volumes.
+      Also adds tracking tags for last attach time and last attach
+      instance id, so detached volumes have their last usage
+      known.
+    filters:
+      - type: value
+        key: "Attachments[0].Device"
+        value: not-null
+    actions:
+      - type: copy-instance-tags
+        tags:
+          - ASV
+          - CMDBEnvironment
+          - OwnerContact
+          - Name
+
+  ###
+
+  - name: ebs-snapshot-retention-delete
+    resource: ebs-snapshot
+    description: |
+      Get rid of old snapshots, not attached to an image
+    filters:
+      - "tag:InstanceId": not-null
+      - type: age
+        days: 21
+    actions:
+      - delete
+
+  ###
+
+  - name: ebs-volume-unencrypted-attached-report
+    resource: ebs
+    description: |
+      Report all attached, unencrypted EBS volumes that are not the boot volume.
+    filters:
+      - Encrypted: false
+      - State: in-use
+    actions:
+      - type: notify
+        template: rdt-ebs-volume-unencrypted-attached-report
+        subject: "[custodian]: Nonprod (rdt-bank) - EBS Volume Attached & Unencrypted"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+  - name: ebs-volume-unencrypted-unattached-delete
+    resource: ebs
+    description: |
+      Find all EBS volumes that are unattached and unencrypted and delete.
+    filters:
+      - Encrypted: false
+      - State: available
+      - Attachments: []
+    actions:
+      - delete
+      - type: notify
+        template: rdt-ebs-volume-unencrypted-unattached-delete
+        subject: "[custodian]: Nonprod (rdt-bank) - EBS Volume Unencrypted"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+  - name: ebs-volume-unused-report
+    resource: ebs
+    description: |
+      Find all EBS volumes that are unattached and mark them for deletion in 21 days.
+    filters:
+      - "tag:custodian_cleanup": absent
+      - Attachments: []
+      - type: value
+        key: "Attachments[0].Device"
+        value: "/dev/sda1"
+        op: ne
+    actions:
+      - type: mark-for-op
+        tag: custodian_cleanup
+        op: delete
+        days: 21
+      - type: notify
+        template: rdt-ebs-volume-unused-report
+        subject: "[custodian]: Nonprod (rdt-bank) - EBS Volume Unattached"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: ebs-volume-unused-fixed
+    resource: ebs
+    description: |
+      Any EBS volume which have previously been marked for deletion
+      should be unmarked if they are now attached.
+    filters:
+      - "tag:custodian_cleanup": not-null
+      - type: value
+        key: "Attachments[0].Device"
+        value: not-null
+    actions:
+      - type: unmark
+        tags:
+          - custodian_cleanup
+
+  - name: ebs-volume-unused-delete
+    resource: ebs
+    description: |
+      Find all EBS volumes that are marked to be deleted and delete.
+    filters:
+      - type: marked-for-op
+        tag: custodian_cleanup
+        op: delete
+      - Attachments: []
+      - type: value
+        key: "Attachments[0].Device"
+        value: "/dev/sda1"
+        op: ne
+    actions:
+      - type: delete
+      - type: notify
+        template: rdt-ebs-volume-unused-delete
+        subject: "[custodian]: Nonprod (rdt-bank) - EBS Volume Unattached - Deleted"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+
+
+  #########################################################
+  ### EC2
+  #########################################################
+
+  - name: ec2-ancient-ami-report
+    resource: ec2
+    description: |
+      Report all running instances older than 60 days which need rehydration.
+    filters:
+      - "tag:custodian_rehydration": absent
+      - or:
+        - type: image-age
+          days: 60
+        - type: instance-age
+          days: 60
+      - type: value
+        key: "State.Name"
+        value: "running"
+        op: equal
+    actions:
+      - type: mark-for-op
+        tag: custodian_rehydration
+        op: stop
+        days: 14
+      - type: notify
+        template: rdt-ec2-ancient-ami-report
+        subject: "[custodian]: Nonprod (rdt-bank) - EC2 Using AMI > 60 Days"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: ec2-ancient-ami-reminder
+    resource: ec2
+    description: |
+      Report all running instances older than 60 days which need rehydration.
+    filters:
+      - "tag:aws:autoscaling:groupName": absent
+      - "tag:custodian_rehydration": not-null
+      - or:
+        - type: image-age
+          days: 67
+        - type: instance-age
+          days: 67
+      - type: value
+        key: "State.Name"
+        value: "running"
+        op: equal
+    actions:
+      - type: notify
+        template: rdt-ec2-ancient-ami-reminder
+        subject: "[custodian]: Nonprod (rdt-bank) - EC2 Using AMI > 60 Days - Reminder"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: ec2-ancient-ami-stop
+    resource: ec2
+    description: |
+      Find all EC2 instances (non-asg) that are marked to be stopped, stop them, and mark to be terminated in 7 days.
+    filters:
+      - "tag:aws:autoscaling:groupName": absent
+      - type: marked-for-op
+        tag: custodian_rehydration
+        op: stop
+      - or:
+        - type: image-age
+          days: 74
+        - type: instance-age
+          days: 74
+    actions:
+      - type: stop
+      - type: mark-for-op
+        tag: custodian_rehydration
+        op: terminate
+        days: 7
+      - type: notify
+        template: rdt-ec2-ancient-ami-stop
+        subject: "[custodian]: Nonprod (rdt-bank) - EC2 Using AMI > 60 Days - Stopped"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: ec2-ancient-ami-terminate
+    resource: ec2
+    description: |
+      Find all EC2 instances that are marked to be deleted and delete.
+    filters:
+      - "tag:aws:autoscaling:groupName": absent
+      - type: marked-for-op
+        tag: custodian_rehydration
+        op: terminate
+      - or:
+        - type: image-age
+          days: 81
+        - type: instance-age
+          days: 81
+    actions:
+      - type: terminate
+        force: true
+      - type: notify
+        template: rdt-ec2-ancient-ami-image
+        subject: "[custodian]: Nonprod (rdt-bank) - EC2 Using AMI > 60 Days - Terminated"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+  - name: ec2-daily-snapshot
+    resource: ec2
+    filters:
+      - type: ebs
+        key: Encrypted
+        value: true
+    actions:
+      - type: snapshot
+        copy-tags:
+          - ASV
+          - CMDBEnvironment
+          - OwnerContact
+          - Name
+
+  ###
+
+  - name: ec2-untagged-report
+    resource: ec2
+    description: |
+      Find all EC2 instances (non-asg) that are non-conformant to tagging policies and mark to be stopped in 1 day.
+    filters:
+      - "tag:aws:autoscaling:groupName": absent
+      - "tag:custodian_tagging": absent
+      - type: instance-age
+        days: 0.007
+      - or:
+        - "tag:ASV": absent
+        - "tag:CMDBEnvironment": absent
+        - "tag:OwnerContact": absent
+    actions:
+      - type: mark-for-op
+        tag: custodian_tagging 
+        op: stop
+        days: 1
+      - type: notify
+        template: rdt-ec2-untagged-report
+        subject: "[custodian]: Nonprod (rdt-bank) - Existing EC2 Instance Missing Tags"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: ec2-untagged-fixed
+    resource: ec2
+    description: |
+      Any EC2 instances (non-asg) which have previously been marked as non-compliant with tag policies, that are now compliant.
+      should be unmarked as non-compliant.
+    filters:
+      - "tag:aws:autoscaling:groupName": absent
+      - "tag:custodian_tagging": not-null
+      - "tag:ASV": not-null
+      - "tag:CMDBEnvironment": not-null
+      - "tag:OwnerContact": not-null
+    actions:
+      - start
+      - type: unmark
+        tags:
+          - custodian_tagging
+
+  - name: ec2-untagged-stop
+    resource: ec2
+    description: |
+      Find all EC2 instances (non-asg) that are marked to be stopped, stop them, and mark to be terminated in 3 days.
+    filters:
+      - "tag:aws:autoscaling:groupName": absent
+      - type: marked-for-op
+        tag: custodian_tagging
+        op: stop
+      - or:
+        - "tag:ASV": absent
+        - "tag:CMDBEnvironment": absent
+        - "tag:OwnerContact": absent
+      - type: value
+        key: "State.Name"
+        value: "running"
+        op: equal
+    actions:
+      - type: stop
+      - type: mark-for-op
+        tag: custodian_tagging
+        op: terminate
+        days: 3
+      - type: notify
+        template: rdt-ec2-untagged-stop
+        subject: "[custodian]: Nonprod (rdt-bank) - Existing EC2 Instance Missing Tags - Stopped"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: ec2-untagged-terminate
+    resource: ec2
+    description: |
+      Find all EC2 instances (non-asg) that are marked to be terminated and terminate.
+    filters:
+      - "tag:aws:autoscaling:groupName": absent
+      - type: marked-for-op
+        tag: custodian_tagging
+        op: terminate
+      - or:
+        - "tag:ASV": absent
+        - "tag:CMDBEnvironment": absent
+        - "tag:OwnerContact": absent
+      - type: value
+        key: "State.Name"
+        value: "stopped"
+        op: equal
+    actions:
+      - type: terminate
+        force: true
+      - type: notify
+        template: rdt-ec2-untagged-terminate
+        subject: "[custodian]: Nonprod (rdt-bank) - Existing EC2 Instance Missing Tags - Terminated"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+  - name: ec2-unused-report
+    resource: ec2
+    description: |
+      Find unused EC2 instances with 14 day average CPU utilization less than 1.5%.
+    filters:
+      - "tag:aws:autoscaling:groupName": absent
+      - "tag:custodian_cleanup": absent
+      - type: value
+        key: InstanceType
+        value: ["t2.micro"]
+        op: not-in
+      - type: instance-age
+        days: 14
+      - type: metrics
+        name: CPUUtilization
+        days: 14
+        value: 1.5
+        op: less-than
+    actions:
+      - type: mark-for-op
+        tag: custodian_cleanup 
+        op: stop
+        days: 7
+      - type: notify
+        template: rdt-ec2-unused-report
+        subject: "[custodian]: Nonprod (rdt-bank) - EC2 Low Utilization"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: ec2-unused-fixed
+    resource: ec2
+    description: |
+      Any EC2 instances which have previously been marked as non-used, that are now utilized,
+      should be unmarked as non-used.
+    filters:
+      - "tag:aws:autoscaling:groupName": absent
+      - "tag:custodian_cleanup": not-null
+      - type: metrics
+        name: CPUUtilization
+        days: 1
+        value: 1.5
+        op: gt
+    actions:
+      - type: unmark
+        tags:
+            custodian_cleanup
+
+  - name: ec2-unused-reminder
+    resource: ec2
+    description: |
+      Report all stopped instances with 14 day average CPU utilization less than 2%.
+    filters:
+      - "tag:aws:autoscaling:groupName": absent
+      - "tag:custodian_cleanup": not-null
+      - type: value
+        key: InstanceType
+        value: ["t2.micro"]
+        op: not-in
+      - type: instance-age
+        days: 14
+      - type: metrics
+        name: CPUUtilization
+        days: 14
+        value: 1.5
+        op: less-than
+      - type: value
+        key: "State.Name"
+        value: "stopped"
+        op: equal
+    actions:
+      - type: notify
+        template: rdt-ec2-unused-reminder
+        subject: "[custodian]: Nonprod (rdt-bank) - EC2 Low Utilization - Reminder"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: ec2-unused-stop
+    resource: ec2
+    description: |
+      Find all EC2 instances (non-asg) that are marked to be stopped, stop them, and mark to be terminated in 7 days.
+    filters:
+      - "tag:aws:autoscaling:groupName": absent
+      - type: marked-for-op
+        tag: custodian_cleanup
+        op: stop
+      - type: value
+        key: InstanceType
+        value: ["t2.micro"]
+        op: not-in
+      - type: instance-age
+        days: 21
+      - type: metrics
+        name: CPUUtilization
+        days: 14
+        value: 1.5
+        op: less-than
+      - type: value
+        key: "State.Name"
+        value: "running"
+        op: equal
+    actions:
+      - type: stop
+      - type: mark-for-op
+        tag: custodian_cleanup
+        op: terminate
+        days: 7
+      - type: notify
+        template: rdt-ec2-unused-stop
+        subject: "[custodian]: Nonprod (rdt-bank) - EC2 Low Utilization - Stopped"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+#  - name: ec2-unused-terminate
+#    resource: ec2
+#    description: |
+#      Find all EC2 instances that are marked to be deleted and delete.
+#    filters:
+#      - "tag:aws:autoscaling:groupName": absent
+#      - type: marked-for-op
+#        tag: custodian_cleanup
+#        op: terminate
+#      - type: value
+#        key: InstanceType
+#        value: ["t2.micro"]
+#        op: not-in
+#      - type: instance-age
+#        days: 28
+#      - type: metrics
+#        name: CPUUtilization
+#        days: 14
+#        value: 1.5
+#        op: less-than
+#      - type: value
+#        key: "State.Name"
+#        value: "stopped"
+#        op: equal
+#    actions:
+#      - type: terminate
+#        force: true
+#      - type: notify
+#        template: rdt-ec2-unused-terminate
+#        subject: "[custodian]: Nonprod (rdt-bank) - EC2 Low Utilization - Terminated"
+#        from: rdtcustodian@capitalone.com
+#        to:
+#          - resource-owner
+#          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+#        transport:
+#          type: sqs
+#          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+
+
+  #########################################################
+  ### ELB 
+  #########################################################
+
+#  - name: elb-unused-report
+#    resource: elb
+#    description: |
+#      Mark any ELBs that have no instances attached to be deleted in 28 days.
+#    filters:
+#      - "tag:custodian_cleanup": absent
+#      - type: value
+#        value_type: age
+#        key: CreatedTime
+#        value: 14
+#        op: gt
+#      - Instances: []
+#      - or:
+#        - type: metrics
+#          name: HealthyHostCount
+#          days: 14
+#          value: 0
+#          op: equal
+#        - type: metrics
+#          name: HealthyHostCount
+#          days: 14
+#          value: []
+#      - or:
+#        - type: metrics
+#          name: UnHealthyHostCount
+#          days: 14
+#          value: 0
+#          op: equal
+#        - type: metrics
+#          name: UnHealthyHostCount
+#          days: 14
+#          value: []
+#    actions:
+#      - type: mark-for-op
+#        tag: custodian_cleanup
+#        op: delete
+#        days: 14
+#      - type: notify
+#        template: rdt-elb-unused-report
+#        subject: "[custodian]: Nonprod (rdt-bank) - ELB No Instances Attached"
+#        from: rdtcustodian@capitalone.com
+#        to:
+#          - resource-owner
+#          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+#        transport:
+#          type: sqs
+#          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: elb-unused-fixed
+    resource: elb
+    description: |
+      Any ELB instances which have previously been marked as non-used, that are now utilized,
+      should be unmarked as non-used.
+    filters:
+      - "tag:custodian_cleanup": not-null
+      - type: value
+        key: Instances
+        value: []
+        op: not-equal
+    actions:
+      - type: remove-tag
+        tags:
+          - custodian_cleanup
+
+  - name: elb-unused-reminder
+    resource: elb
+    description: |
+      Report all ELBs that have no instances attached to be deleted in 28 days.
+    filters:
+      - "tag:custodian_cleanup": not-null
+      - type: value
+        value_type: age
+        key: CreatedTime
+        value: 21
+        op: gt
+      - Instances: []
+    actions:
+      - type: notify
+        template: rdt-elb-unused-reminder
+        subject: "[custodian]: Nonprod (rdt-bank) - ELB No Instances Attached - Reminder"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: elb-unused-delete
+    resource: elb
+    description: |
+     Find all ELB instances that are marked to be deleted and delete.
+    filters:
+      - type: marked-for-op
+        tag: custodian_cleanup
+        op: delete
+      - type: value
+        value_type: age
+        key: CreatedTime
+        value: 28
+        op: gt
+      - Instances: []
+      - or:
+        - type: metrics
+          name: HealthyHostCount
+          days: 14
+          value: 0
+          op: equal
+        - type: metrics
+          name: HealthyHostCount
+          days: 14
+          value: []
+      - or:
+        - type: metrics
+          name: UnHealthyHostCount
+          days: 14
+          value: 0
+          op: equal
+        - type: metrics
+          name: UnHealthyHostCount
+          days: 14
+          value: []
+    actions:
+      - delete
+      - type: notify
+        template: rdt-elb-unused-delete
+        subject: "[custodian]: Nonprod (rdt-bank) - ELB No Instances Attached - Deleted"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+
+
+  #########################################################
+  ### LAUNCH CONFIG 
+  #########################################################
+
+  - name: launch-config-unused
+    resource: launch-config
+    description: |
+      Delete unused launch configurations.
+    filters:
+      - type: age
+        days: 0.5
+      - unused
+    actions:
+      - delete
+      - type: notify
+        template: rdt-launch-config-unused
+        subject: "[custodian]: Nonprod (rdt-bank) - Launch Config Unused - Deleted"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+
+
+  #########################################################
+  ### LOG GROUPS
+  #########################################################
+
+  - name: log-group-gc
+    resource: log-group
+    description: |
+      Delete unused log groups.
+    filters:
+      - type: last-write
+        days: 60
+    actions:
+      - type: delete
+      - type: notify
+        template: rdt-log-group-unused-report
+        subject: "[custodian]: Nonprod (rdt-bank) - Log Groups Unused - Deleted"
+        from: rdtcustodian@capitalone.com
+        to:
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+
+
+
+  #########################################################
+  ### RDS 
+  #########################################################
+
+  - name: rds-cluster-snapshot-retention-delete
+    resource: rds-cluster-snapshot
+    filters:
+      - type: age
+        days: 21
+    actions:
+      - delete
+
+  ###
+
+  - name: rds-snapshot-retention-delete
+    resource: rds-snapshot
+    filters:
+      - type: age
+        days: 21
+    actions:
+      - delete
+
+  ###
+
+  - name: rds-untagged-report
+    resource: rds
+    description: |
+      Require proper tagging for all newly provisioned RDS instances.
+    filters:
+      - "tag:custodian_tagging": absent
+      - or:
+        - "tag:ASV": absent
+        - "tag:CMDBEnvironment": absent
+        - "tag:OwnerContact": absent
+    actions: 
+      - type: mark-for-op
+        tag: custodian_tagging
+        op: delete
+        days: 3
+      - type: notify
+        template: rdt-rds-untagged-report
+        subject: "[custodian]: Nonprod (rdt-bank) - RDS Instance Missing Tags"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: rds-untagged-fixed
+    resource: rds
+    description: |
+      Any RDS instances which have previously been marked as non-compliant with tag policies, that are now compliant.
+      should be unmarked as non-compliant.
+    filters:
+      - "tag:custodian_tagging": not-null
+      - "tag:ASV": not-null
+      - "tag:CMDBEnvironment": not-null
+      - "tag:OwnerContact": not-null
+    actions:
+      - type: unmark
+        tags:
+          - custodian_tagging
+
+  - name: rds-untagged-delete
+    resource: rds
+    description: |
+      Find all RDS instances that are marked to be deleted and delete.
+    filters:
+      - type: marked-for-op
+        tag: custodian_tagging
+        op: delete
+      - or:
+        - "tag:ASV": absent
+        - "tag:CMDBEnvironment": absent
+        - "tag:OwnerContact": absent
+      - type: value
+        key: Engine
+        value: "aurora"
+        op: not-equal
+    actions:
+      - type: delete
+        force: true
+      - type: notify
+        template: rdt-rds-untagged-delete
+        subject: "[custodian]: Nonprod (rdt-bank) - RDS Instance Missing Tags - Deleted"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+  - name: rds-unused-report
+    resource: rds
+    description: |
+      Take the average connections over 14 days and mark unused RDS instances.
+    filters:
+      - "tag:custodian_cleanup": absent
+      - type: value
+        value_type: age
+        key: InstanceCreateTime
+        value: 14
+        op: gt
+      - type: metrics
+        name: DatabaseConnections
+        days: 14
+        value: 0
+        op: equal
+    actions:
+      - type: mark-for-op
+        tag: custodian_cleanup
+        op: delete
+        days: 14
+      - type: notify
+        template: rdt-rds-unused-report
+        subject: "[custodian]: Nonprod (rdt-bank) - RDS No Connections"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: rds-unused-fixed
+    resource: rds
+    description: |
+     Any RDS instances which have previously been marked as non-used, that are now utilized,
+     should be unmarked as non-used.
+    filters:
+      - "tag:custodian_cleanup": not-null
+      - type: value
+        value_type: age
+        key: InstanceCreateTime
+        value: 14
+        op: gt
+      - type: metrics
+        name: DatabaseConnections
+        days: 1
+        value: 0
+        op: not-equal
+    actions:
+      - type: unmark
+        tags:
+          - custodian_cleanup
+
+  - name: rds-unused-reminder
+    resource: rds
+    description: |
+      Report all RDS instances with 14 days with no connections.
+    filters:
+      - "tag:custodian_cleanup": not-null
+      - type: value
+        value_type: age
+        key: InstanceCreateTime
+        value: 21
+        op: gt
+      - type: metrics
+        name: DatabaseConnections
+        days: 14
+        value: 0
+        op: equal
+    actions:
+      - type: notify
+        template: rdt-rds-unused-reminder
+        subject: "[custodian]: Nonprod (rdt-bank) - RDS No Connections - Reminder"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: rds-unused-delete
+    resource: rds
+    description: |
+      Find all RDS instances that are marked to be deleted and delete.
+    filters:
+      - type: marked-for-op
+        tag: custodian_cleanup
+        op: delete
+      - type: value
+        key: Engine
+        value: "aurora"
+        op: ne
+      - type: value
+        value_type: age
+        key: InstanceCreateTime
+        value: 28
+        op: gt
+      - type: metrics
+        name: DatabaseConnections
+        days: 14
+        value: 0
+        op: equal
+    actions:
+      - type: delete
+        force: true
+      - type: notify
+        template: rdt-rds-unused-delete
+        subject: "[custodian]: Nonprod (rdt-bank) - RDS No Connections - Deleted"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+
+
+  #########################################################
+  ### REDSHIFT 
+  #########################################################
+
+  - name: redshift-snapshot-retention-delete
+    resource: redshift-snapshot
+    filters:
+      - type: age
+        days: 21
+    actions:
+      - delete
+
+  ###
+
+  - name: redshift-untagged-report
+    resource: redshift
+    description: |
+      Require proper tagging for all newly provisioned Redshift clusters.
+    filters:
+      - "tag:custodian_tagging": absent
+      - or:
+        - "tag:ASV": absent
+        - "tag:CMDBEnvironment": absent
+        - "tag:OwnerContact": absent
+    actions: 
+      - type: mark-for-op
+        tag: custodian_tagging
+        op: delete
+        days: 3
+      - type: notify
+        template: rdt-redshift-untagged-report
+        subject: "[custodian]: Nonprod (rdt-bank) - Redshift Cluster Missing Tags"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: redshift-untagged-fixed
+    resource: redshift
+    description: |
+      Any Redshift clusters which have previously been marked as non-compliant with tag policies, that are now compliant.
+      should be unmarked as non-compliant.
+    filters:
+      - "tag:custodian_tagging": not-null
+      - "tag:ASV": not-null
+      - "tag:CMDBEnvironment": not-null
+      - "tag:OwnerContact": not-null
+    actions:
+      - type: unmark
+        tags:
+          - custodian_tagging
+
+  - name: redshift-untagged-delete
+    resource: redshift
+    description: |
+      Find all Redshift clusters that are marked to be deleted and delete.
+    filters:
+      - type: marked-for-op
+        tag: custodian_tagging
+        op: delete
+      - or:
+        - "tag:ASV": absent
+        - "tag:CMDBEnvironment": absent
+        - "tag:OwnerContact": absent
+    actions:
+      - delete
+      - type: notify
+        template: rdt-redshift-untagged-delete
+        subject: "[custodian]: Nonprod (rdt-bank) - Redshift Cluster Missing Tags - Deleted"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+  - name: redshift-unused-report
+    resource: redshift
+    description: |
+      Take the average connections over 14 days and mark unused Redshift clusters.
+    filters:
+      - "tag:custodian_cleanup": absent
+      - type: value
+        value_type: age
+        key: ClusterCreateTime
+        value: 14
+        op: gt
+      - type: metrics
+        name: DatabaseConnections
+        days: 14
+        value: 0
+        op: equal
+    actions:
+      - type: mark-for-op
+        tag: custodian_cleanup
+        op: delete
+        days: 14
+      - type: notify
+        template: rdt-redshift-unused-report
+        subject: "[custodian]: Nonprod (rdt-bank) - Redshift No Connections"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: redshift-unused-fixed
+    resource: redshift
+    description: |
+     Any Redshift clusters which have previously been marked as non-used, that are now utilized,
+     should be unmarked as non-used.
+    filters:
+      - "tag:custodian_cleanup": not-null
+      - type: value
+        value_type: age
+        key: ClusterCreateTime
+        value: 14
+        op: gt
+      - type: metrics
+        name: DatabaseConnections
+        days: 1
+        value: 0
+        op: not-equal
+    actions:
+      - type: unmark
+        tags:
+          - custodian_cleanup
+
+  - name: redshift-unused-reminder
+    resource: redshift
+    description: |
+      Report all Redshift clusters with 14 days with no connections.
+    filters:
+      - "tag:custodian_cleanup": not-null
+      - type: value
+        value_type: age
+        key: ClusterCreateTime
+        value: 21
+        op: gt
+      - type: metrics
+        name: DatabaseConnections
+        days: 14
+        value: 0
+        op: equal
+    actions:
+      - type: notify
+        template: rdt-redshift-unused-reminder
+        subject: "[custodian]: Nonprod (rdt-bank) - Redshift No Connections - Reminder"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  - name: redshift-unused-delete
+    resource: redshift
+    description: |
+      Find all Redshift clusters that are marked to be deleted and delete.
+    filters:
+      - type: marked-for-op
+        tag: custodian_cleanup
+        op: delete
+      - type: value
+        value_type: age
+        key: ClusterCreateTime
+        value: 28
+        op: gt
+      - type: metrics
+        name: DatabaseConnections
+        days: 14
+        value: 0
+        op: equal
+    actions:
+      - delete
+      - type: notify
+        template: rdt-redshift-unused-delete
+        subject: "[custodian]: Nonprod (rdt-bank) - Redshift No Connections - Deleted"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+
+
+  #########################################################
+  ### S3 
+  #########################################################
+
+  - name: s3-autotag
+    resource: s3
+    description: |
+      Automatically tag OwnerContact in S3 buckets if not tagged at creation.
+    mode:
+     type: cloudtrail
+     events:
+       - CreateBucket
+    filters:
+      - or:
+        - "tag:ASV": absent
+        - "tag:OwnerContact": absent
+    actions:
+      - type: auto-tag-user
+        tag: OwnerContact
+        Value: event-owner
+      - type: notify
+        template: rdt-s3-autotag-report
+        subject: "[custodian]: Nonprod (rdt-bank) - S3 Bucket Missing Tag - Auto Tag Applied"
+        from: rdtcustodian@capitalone.com
+        to:
+          - event-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+  - name: s3-global-access
+    tags: 
+      - "control:isrm6"
+    resource: s3
+    description: |
+      ISRM 6 - Removal of S3 global grants
+    resource: s3
+    filters:
+      - global-grants
+    actions:
+      - delete-global-grants
+      - type: notify
+        template: rdt-s3-global-access-report
+        subject: "[custodian]: Nonprod (rdt-bank) - Existing S3 Buckets Global Access"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
+
+  - name: s3-untagged-report
+    resource: s3
+    description: |
+      Require proper tagging for all S3 buckets.
+    filters:
+      - or:
+        - "tag:ASV": absent
+        - "tag:OwnerContact": absent
+    actions: 
+      - type: tag
+        key: custodian_tagging
+        value: "Instance is missing required tag(s)"
+      - type: notify
+        template: rdt-s3-untagged-report
+        subject: "[custodian]: Nonprod (rdt-bank) - S3 Bucket Missing Tags"
+        from: rdtcustodian@capitalone.com
+        to:
+          - resource-owner
+          - arn:aws:sns:us-east-1:############:rdt-custodian-nonprod
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/############/cloud-maid-message-relay
+
+  ###
